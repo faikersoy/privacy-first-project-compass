@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Project Compass | Privacy-First Delivery Intelligence</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body { background-color: #0f172a; color: #f8fafc; font-family: system-ui, -apple-system, sans-serif; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #1e293b; }
+    ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    // KVKK/GDPR Uyumlu İstemci Taraflı PII Maskeleme Motoru
+    const scrubPII = (text) => {
+      if (!text) return "";
+      let scrubbed = text;
+
+      // E-posta adresleri
+      scrubbed = scrubbed.replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, "[E-POSTA GİZLENDİ]");
+
+      // Türkiye & Uluslararası Telefon Numaraları
+      scrubbed = scrubbed.replace(/(\+90|0)?\s*\(?5\d{2}\)?[\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}/g, "[TELEFON GİZLENDİ]");
+
+      // T.C. Kimlik Numarası (11 haneli)
+      scrubbed = scrubbed.replace(/\b[1-9]\d{10}\b/g, "[TCKN GİZLENDİ]");
+
+      // IBAN (TR...)
+      scrubbed = scrubbed.replace(/\bTR\d{2}\s?(\d{4}\s?){5}\d{2}\b/gi, "[IBAN GİZLENDİ]");
+
+      // IPv4 Adresleri
+      scrubbed = scrubbed.replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[IP GİZLENDİ]");
+
+      // @mention kullanıcı adları
+      scrubbed = scrubbed.replace(/@([a-zA-ZçğıöşüÇĞİÖŞÜ0-9_.-]+)/g, "@[KULLANICI]");
+
+      return scrubbed;
+    };
+
+    // Etiket Tabanlı Çok Kanallı Metin Ayrıştırıcı
+    const parseLogs = (rawText, enablePII) => {
+      const processedText = enablePII ? scrubPII(rawText) : rawText;
+      const lines = processedText.split("\n").map(l => l.trim()).filter(Boolean);
+
+      const tagRegex = /^(SLACK|EMAIL|MEETING|TICKET|JIRA|DISCORD|CALL|INCIDENT|TXN)\s*:\s*(.*)$/i;
+      const entries = [];
+      let currentEntry = null;
+
+      lines.forEach((line, idx) => {
+        const match = line.match(tagRegex);
+        if (match) {
+          if (currentEntry) entries.push(currentEntry);
+          currentEntry = {
+            id: idx + "-" + Date.now(),
+            channel: match[1].toUpperCase(),
+            content: match[2].trim()
+          };
+        } else if (currentEntry) {
+          currentEntry.content += " " + line;
+        } else {
+          entries.push({
+            id: idx + "-" + Date.now(),
+            channel: "GENEL",
+            content: line
+          });
+        }
+      });
+
+      if (currentEntry) entries.push(currentEntry);
+      return entries;
+    };
+
+    // Risk ve Görev Analiz Motoru
+    const analyzeProject = (entries) => {
+      const riskKeywords = [
+        "gecikme", "blok", "engel", "hata", "bug", "kritik", "yetişmez", "iptal",
+        "sorun", "risk", "beklemede", "onay bekliyor", "kriz", "çöktü", "eksik",
+        "delay", "blocker", "critical", "fail", "issue", "overdue", "stuck"
+      ];
+      const warningKeywords = [
+        "dikkat", "kontrol", "revize", "belirsiz", "soru", "takip", "yaklaşıyor",
+        "warning", "review", "pending", "unclear", "follow-up"
+      ];
+      const taskKeywords = [
+        "yapılacak", "görev", "aksiyon", "teslim", "tamamla", "gönder", "hazırla",
+        "test et", "kontrol et", "todo", "action", "deliver", "deploy", "fix"
+      ];
+
+      const risks = [];
+      const tasks = [];
+      let redScore = 0;
+      let yellowScore = 0;
+
+      entries.forEach((entry) => {
+        const lower = entry.content.toLowerCase();
+        const isRisk = riskKeywords.some(k => lower.includes(k));
+        const isWarning = warningKeywords.some(k => lower.includes(k));
+        const isTask = taskKeywords.some(k => lower.includes(k));
+
+        if (isRisk) {
+          redScore += 2;
+          risks.push({ ...entry, severity: "YÜKSEK" });
+        } else if (isWarning) {
+          yellowScore += 1;
+          risks.push({ ...entry, severity: "ORTA" });
+        }
+
+        if (isTask || isRisk) {
+          tasks.push({
+            ...entry,
+            status: isRisk ? "Acil Müdahale" : "Planlandı"
+          });
+        }
+      });
+
+      let health = { status: "YEŞİL", label: "Stabil / Yolunda", color: "bg-emerald-500", text: "text-emerald-400", border: "border-emerald-500/40" };
+      if (redScore >= 2) {
+        health = { status: "KIRMIZI", label: "Kritik Risk / Müdahale Gerekli", color: "bg-rose-500", text: "text-rose-400", border: "border-rose-500/40" };
+      } else if (redScore === 1 || yellowScore >= 2) {
+        health = { status: "SARI", label: "Dikkat / Yakın Takip Gerekli", color: "bg-amber-500", text: "text-amber-400", border: "border-amber-500/40" };
+      }
+
+      return { health, risks, tasks };
+    };
+
+    const SAMPLE_DATA = `MEETING: Müşteri ile haftalık durum toplantısı yapıldı. @ahmet.yilmaz API entegrasyonunun Cuma gününe yetişmeyeceğini belirtti.
+SLACK: Backend ekibinden bilgi: Ödeme servisinde kritik bir bug tespit edildi, test ortamı şu an blok durumda.
+EMAIL: Finans departmanından ahmet.yilmaz@sirket.com adresine fatura onayı gönderildi, onay bekliyor. İletişim: 0532 123 45 67.
+JIRA: TICKET-402 kullanıcı giriş ekranı UI revizyonu tamamlandı, QA ekibi test etmeli.
+CALL: Müşteri temsilcisi ile görüşüldü, canlıya geçiş tarihi konusunda belirsizlik var, yarın aksiyon planı gönderilecek.`;
+
+    function App() {
+      const [projectName, setProjectName] = useState(() => localStorage.getItem("pc_project_name") || "Entranet ERP Faz-2");
+      const [projectOwner, setProjectOwner] = useState(() => localStorage.getItem("pc_project_owner") || "Proje Koordinatörü");
+      const [rawInput, setRawInput] = useState(() => localStorage.getItem("pc_raw_input") || SAMPLE_DATA);
+      const [piiEnabled, setPiiEnabled] = useState(true);
+      const [activeTab, setActiveTab] = useState("dashboard");
+
+      useEffect(() => {
+        localStorage.setItem("pc_project_name", projectName);
+        localStorage.setItem("pc_project_owner", projectOwner);
+        localStorage.setItem("pc_raw_input", rawInput);
+      }, [projectName, projectOwner, rawInput]);
+
+      const entries = useMemo(() => parseLogs(rawInput, piiEnabled), [rawInput, piiEnabled]);
+      const analysis = useMemo(() => analyzeProject(entries), [entries]);
+
+      const handleNukeAll = () => {
+        if (window.confirm("Tüm proje verileri ve yerel hafıza kalıcı olarak silinecek. Emin misiniz?")) {
+          localStorage.removeItem("pc_project_name");
+          localStorage.removeItem("pc_project_owner");
+          localStorage.removeItem("pc_raw_input");
+          setProjectName("");
+          setProjectOwner("");
+          setRawInput("");
+        }
+      };
+
+      const handleExportJSON = () => {
+        const payload = {
+          exportedAt: new Date().toISOString(),
+          project: { name: projectName, owner: projectOwner },
+          health: analysis.health.status,
+          risks: analysis.risks,
+          tasks: analysis.tasks,
+          sanitizedLogs: entries
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${(projectName || "project-compass").toLowerCase().replace(/\s+/g, "-")}-rapor.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      const channelColors = {
+        SLACK: "bg-purple-500/20 text-purple-300 border-purple-500/30",
+        EMAIL: "bg-blue-500/20 text-blue-300 border-blue-500/30",
+        MEETING: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+        JIRA: "bg-sky-500/20 text-sky-300 border-sky-500/30",
+        TICKET: "bg-sky-500/20 text-sky-300 border-sky-500/30",
+        DISCORD: "bg-indigo-500/20 text-indigo-300 border-indigo-500/30",
+        CALL: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+        INCIDENT: "bg-rose-500/20 text-rose-300 border-rose-500/30",
+        GENEL: "bg-slate-700 text-slate-300 border-slate-600"
+      };
+
+      return (
+        <div className="min-h-screen flex flex-col">
+          {/* Üst Güvenlik ve Kontrol Barı */}
+          <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-10 px-6 py-4">
+            <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/20">
+                  PC
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h1 className="text-lg font-bold tracking-tight text-white">Project Compass</h1>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-medium">
+                      100% Offline & Client-Side
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">Çok Kanallı Teslimat İstihbaratı & PII Korumalı Durum Paneli</p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 text-xs bg-slate-800 px-3 py-2 rounded-lg border border-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={piiEnabled}
+                    onChange={(e) => setPiiEnabled(e.target.checked)}
+                    className="accent-indigo-500"
+                  />
+                  <span className="text-slate-200 font-medium">KVKK / PII Maskeleme</span>
+                </label>
+
+                <button
+                  onClick={handleExportJSON}
+                  className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2 rounded-lg border border-slate-700 transition"
+                >
+                  JSON Dışa Aktar
+                </button>
+
+                <button
+                  onClick={handleNukeAll}
+                  className="text-xs bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 px-3 py-2 rounded-lg border border-rose-800/60 transition font-medium"
+                >
+                  Nuke All (Temizle)
+                </button>
+              </div>
+            </div>
+          </header>
+
+          {/* Ana Çalışma Alanı */}
+          <main className="flex-1 max-w-7xl w-full mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+            
+            {/* Sol Panel: Proje Künyesi & Veri Girişi */}
+            <section className="lg:col-span-5 flex flex-col gap-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+                <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Proje Bilgileri</h2>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Proje Adı</label>
+                    <input
+                      type="text"
+                      value={projectName}
+                      onChange={(e) => setProjectName(e.target.value)}
+                      placeholder="Örn: Entranet ERP Geçişi"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Sorumlu / Rol</label>
+                    <input
+                      type="text"
+                      value={projectOwner}
+                      onChange={(e) => setProjectOwner(e.target.value)}
+                      placeholder="Örn: Proje Yöneticisi"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex-1 flex flex-col">
+                <div className="flex items-center justify-between mb-2">
+                  <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Çok Kanallı Not Girişi</h2>
+                  <button
+                    onClick={() => setRawInput(SAMPLE_DATA)}
+                    className="text-xs text-indigo-400 hover:text-indigo-300"
+                  >
+                    Örnek Veri Yükle
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">
+                  Satır başlarına <code className="text-indigo-300">SLACK:</code>, <code className="text-indigo-300">EMAIL:</code>, <code className="text-indigo-300">MEETING:</code>, <code className="text-indigo-300">JIRA:</code>, <code className="text-indigo-300">DISCORD:</code> veya <code className="text-indigo-300">CALL:</code> ekleyerek ham notları yapıştırın.
+                </p>
+                <textarea
+                  value={rawInput}
+                  onChange={(e) => setRawInput(e.target.value)}
+                  placeholder="SLACK: Ekip API gecikmesi bildirdi..."
+                  className="w-full flex-1 min-h-[320px] bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm text-slate-200 font-mono leading-relaxed focus:outline-none focus:border-indigo-500 resize-none"
+                />
+              </div>
+            </section>
+
+            {/* Sağ Panel: Trafik Işığı Durumu, Risk Radarı & Ayrıştırılmış Akış */}
+            <section className="lg:col-span-7 flex flex-col gap-4">
+              
+              {/* Trafik Işığı Durum Kartı */}
+              <div className={`bg-slate-900 border ${analysis.health.border} rounded-xl p-5 flex flex-wrap items-center justify-between gap-4`}>
+                <div>
+                  <div className="text-xs text-slate-400 mb-1">
+                    {projectName || "İsimsiz Proje"} • <span className="text-slate-300">{projectOwner || "Belirtilmedi"}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className={`w-4 h-4 rounded-full ${analysis.health.color} animate-pulse`}></span>
+                    <h2 className={`text-xl font-bold ${analysis.health.text}`}>
+                      DURUM: {analysis.health.status} — {analysis.health.label}
+                    </h2>
+                  </div>
+                </div>
+
+                <div className="flex gap-4 text-center">
+                  <div className="bg-slate-950 px-4 py-2 rounded-lg border border-slate-800">
+                    <div className="text-lg font-bold text-white">{entries.length}</div>
+                    <div className="text-[11px] text-slate-400">Kayıt</div>
+                  </div>
+                  <div className="bg-slate-950 px-4 py-2 rounded-lg border border-slate-800">
+                    <div className="text-lg font-bold text-rose-400">{analysis.risks.length}</div>
+                    <div className="text-[11px] text-slate-400">Risk / Uyarı</div>
+                  </div>
+                  <div className="bg-slate-950 px-4 py-2 rounded-lg border border-slate-800">
+                    <div className="text-lg font-bold text-indigo-400">{analysis.tasks.length}</div>
+                    <div className="text-[11px] text-slate-400">Aksiyon</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Sekme Navigasyonu */}
+              <div className="flex gap-2 border-b border-slate-800 pb-2">
+                <button
+                  onClick={() => setActiveTab("dashboard")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${activeTab === "dashboard" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"}`}
+                >
+                  Risk Radarı & Görev Matrisi
+                </button>
+                <button
+                  onClick={() => setActiveTab("logs")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${activeTab === "logs" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"}`}
+                >
+                  Maskelenmiş Kanal Akışı ({entries.length})
+                </button>
+              </div>
+
+              {activeTab === "dashboard" ? (
+                <div className="space-y-4">
+                  {/* Risk Radarı */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-rose-400 mb-3">
+                      Tespit Edilen Riskler ve Blokajlar
+                    </h3>
+                    {analysis.risks.length === 0 ? (
+                      <p className="text-sm text-slate-400">Mevcut notlarda kritik bir risk veya blokaj tespit edilmedi.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {analysis.risks.map((item) => (
+                          <div key={item.id} className="bg-slate-950 border border-slate-800 rounded-lg p-3 flex items-start justify-between gap-3">
+                            <div className="space-y-1">
+                              <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded border ${channelColors[item.channel] || channelColors.GENEL}`}>
+                                {item.channel}
+                              </span>
+                              <p className="text-sm text-slate-200">{item.content}</p>
+                            </div>
+                            <span className={`text-[10px] font-bold px-2 py-1 rounded shrink-0 ${item.severity === "YÜKSEK" ? "bg-rose-500/20 text-rose-300" : "bg-amber-500/20 text-amber-300"}`}>
+                              {item.severity}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Görev ve Aksiyon Matrisi */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-indigo-400 mb-3">
+                      Çıkarılan Aksiyon & Görev Matrisi
+                    </h3>
+                    {analysis.tasks.length === 0 ? (
+                      <p className="text-sm text-slate-400">Notlardan ayrıştırılmış belirgin bir görev bulunamadı.</p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="border-b border-slate-800 text-[11px] text-slate-400 uppercase">
+                              <th className="py-2 pr-3">Kaynak</th>
+                              <th className="py-2 pr-3">Aksiyon / Bağlam</th>
+                              <th className="py-2 text-right">Öncelik</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60 text-sm">
+                            {analysis.tasks.map((task) => (
+                              <tr key={task.id}>
+                                <td className="py-2.5 pr-3 align-top">
+                                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${channelColors[task.channel] || channelColors.GENEL}`}>
+                                    {task.channel}
+                                  </span>
+                                </td>
+                                <td className="py-2.5 pr-3 text-slate-200">{task.content}</td>
+                                <td className="py-2.5 text-right align-top">
+                                  <span className={`text-xs font-medium ${task.status === "Acil Müdahale" ? "text-rose-400" : "text-emerald-400"}`}>
+                                    {task.status}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                /* Maskelenmiş Kanal Akışı */
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                  <div className="flex items-center justify-between mb-1">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                      Ayrıştırılmış ve Temizlenmiş Kayıtlar
+                    </h3>
+                    <span className="text-[11px] text-slate-500">
+                      PII Maskeleme: {piiEnabled ? "Aktif" : "Kapalı"}
+                    </span>
+                  </div>
+                  {entries.map((entry) => (
+                    <div key={entry.id} className="bg-slate-950 border border-slate-800 rounded-lg p-3 flex items-start gap-3">
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 mt-0.5 ${channelColors[entry.channel] || channelColors.GENEL}`}>
+                        {entry.channel}
+                      </span>
+                      <p className="text-sm text-slate-200 leading-relaxed">{entry.content}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+            </section>
+          </main>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
